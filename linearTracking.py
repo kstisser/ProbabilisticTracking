@@ -27,6 +27,7 @@ def generate_data(args):
     num_objects = int(round(args.expected_num_objects))  # Deterministic.
     states = dist.Normal(0., 1.).sample((num_objects, 2))
 
+    print("Num frames: ", args.num_frames, " with num objects: ", num_objects)
     # Detection model.
     emitted = dist.Bernoulli(args.emission_prob).sample((args.num_frames, num_objects))
     num_spurious = dist.Poisson(args.expected_num_spurious).sample((args.num_frames,))
@@ -146,7 +147,7 @@ def plot_solution(message=''):
 
 args = type('Args', (object,), {})  # A fake ArgumentParser.parse_args() result.
 
-args.num_frames = 5
+args.num_frames = 20
 args.max_num_objects = 3
 args.expected_num_objects = 2.
 args.expected_num_spurious = 1.
