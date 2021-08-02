@@ -46,6 +46,8 @@ def generate_data(args):
             observations[t, j:j+n, 0] = dist.Normal(0., 1.).sample((n,))
             observations[t, j:j+n, 1] = 1
 
+    print("Generated positions are: ")
+    print(positions)
     return states, positions, observations
 
 def model(args, observations):

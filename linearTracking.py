@@ -11,29 +11,36 @@ from pyro.contrib.tracking.assignment import MarginalAssignmentPersistent
 from pyro.distributions.util import gather
 from pyro.infer import SVI, TraceEnum_ELBO
 from pyro.optim import Adam
+import numpy as np
 
 import os
 os.environ["KMP_DUPLICATE_LIB_OK"]="TRUE"
 
 assert pyro.__version__.startswith('1.7.0')
 smoke_test = ('CI' in os.environ)
+num_dimensions = 2
 
 def get_dynamics(num_frames):
-    time = torch.arange(float(num_frames)) / 4
-    return torch.stack([time.cos(), time.sin()], -1)
+    x = torch.arange(float(num_frames)) / 4
+    y = torch.arange(float(num_frames)) / 4
+    #z = torch.arange(float(num_frames)) / 4
+    transposed = torch.stack([x, y], -1)
+    return transposed
 
 def generate_data(args):
     # Object model.
     num_objects = int(round(args.expected_num_objects))  # Deterministic.
-    states = dist.Normal(0., 1.).sample((num_objects, 2))
+    states = dist.Normal(0., 1.).sample((num_objects, num_dimensions))
 
     print("Num frames: ", args.num_frames, " with num objects: ", num_objects)
     # Detection model.
     emitted = dist.Bernoulli(args.emission_prob).sample((args.num_frames, num_objects))
     num_spurious = dist.Poisson(args.expected_num_spurious).sample((args.num_frames,))
     max_num_detections = int((num_spurious + emitted.sum(-1)).max())
-    observations = torch.zeros(args.num_frames, max_num_detections, 1+1) # position+confidence
+    observations = torch.zeros(args.num_frames, max_num_detections, 2) # position+confidence
     positions = get_dynamics(args.num_frames).mm(states.t())
+    print("Positions: ")
+    print(positions)
     noisy_positions = dist.Normal(positions, args.emission_noise_scale).sample()
     for t in range(args.num_frames):
         j = 0
@@ -88,7 +95,7 @@ def model(args, observations):
 
 def guide(args, observations):
     # Initialize states randomly from the prior.
-    states_loc = pyro.param("states_loc", lambda: torch.randn(args.max_num_objects, 2))
+    states_loc = pyro.param("states_loc", lambda: torch.randn(args.max_num_objects, num_dimensions))
     states_scale = pyro.param("states_scale",
                               lambda: torch.ones(states_loc.shape) * args.emission_noise_scale,
                               constraint=constraints.positive)
@@ -147,9 +154,9 @@ def plot_solution(message=''):
 
 args = type('Args', (object,), {})  # A fake ArgumentParser.parse_args() result.
 
-args.num_frames = 20
-args.max_num_objects = 3
-args.expected_num_objects = 2.
+args.num_frames = 5
+args.max_num_objects = 4
+args.expected_num_objects = 3.
 args.expected_num_spurious = 1.
 args.emission_prob = 0.8
 args.emission_noise_scale = 0.1
@@ -160,9 +167,9 @@ pyro.set_rng_seed(0)
 true_states, true_positions, observations = generate_data(args)
 true_num_objects = len(true_states)
 max_num_detections = observations.shape[1]
-assert true_states.shape == (true_num_objects, 2)
+assert true_states.shape == (true_num_objects, num_dimensions)
 assert true_positions.shape == (args.num_frames, true_num_objects)
-assert observations.shape == (args.num_frames, max_num_detections, 1+1)
+assert observations.shape == (args.num_frames, max_num_detections, 2)
 print("generated {:d} detections from {:d} objects".format(
     (observations[..., -1] > 0).long().sum(), true_num_objects))
 
