@@ -3,6 +3,7 @@ import os
 import torch
 from torch.distributions import constraints
 from matplotlib import pyplot
+import pdb
 
 import pyro
 import pyro.distributions as dist
@@ -21,8 +22,8 @@ smoke_test = ('CI' in os.environ)
 num_dimensions = 2
 
 def get_dynamics(num_frames):
-    x = torch.arange(float(num_frames)) / 4
-    y = torch.arange(float(num_frames)) / 4
+    x = torch.arange(float(num_frames))
+    y = torch.arange(float(num_frames))
     #z = torch.arange(float(num_frames)) / 4
     transposed = torch.stack([x, y], -1)
     return transposed
@@ -73,11 +74,18 @@ def model(args, observations):
             is_spurious = (assign == args.max_num_objects)
             is_real = is_observed & ~is_spurious
             num_observed = is_observed.float().sum(-1, True)
+
+            
+            bernoulliRealProbs = args.expected_num_objects / num_observed
+            bernoulliRealProbs = np.clip(bernoulliRealProbs, 0., 1.)
             pyro.sample("is_real",
-                        dist.Bernoulli(args.expected_num_objects / num_observed),
+                        dist.Bernoulli(bernoulliRealProbs),
                         obs=is_real.float())
+
+            bernoulliSpuriousProbs = args.expected_num_spurious / num_observed
+            bernoulliSpuriousProbs = np.clip(bernoulliSpuriousProbs, 0., 1.)
             pyro.sample("is_spurious",
-                        dist.Bernoulli(args.expected_num_spurious / num_observed),
+                        dist.Bernoulli(bernoulliSpuriousProbs),
                         obs=is_spurious.float())
 
             # The remaining continuous part is exact.
@@ -155,8 +163,8 @@ def plot_solution(message=''):
 args = type('Args', (object,), {})  # A fake ArgumentParser.parse_args() result.
 
 args.num_frames = 5
-args.max_num_objects = 4
-args.expected_num_objects = 3.
+args.max_num_objects = 3
+args.expected_num_objects = 2.
 args.expected_num_spurious = 1.
 args.emission_prob = 0.8
 args.emission_noise_scale = 0.1
@@ -172,7 +180,6 @@ assert true_positions.shape == (args.num_frames, true_num_objects)
 assert observations.shape == (args.num_frames, max_num_detections, 2)
 print("generated {:d} detections from {:d} objects".format(
     (observations[..., -1] > 0).long().sum(), true_num_objects))
-
 
 
 pyro.set_rng_seed(1)

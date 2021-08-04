@@ -39,7 +39,19 @@ class Args:
         self.expected_num_spurious = 1.
         self.emission_prob = 0.8
         self.emission_noise_scale = 0.1 
-        return self       
+        assert self.max_num_objects >= self.expected_num_objects
+        return self 
+
+    def get_prior_predictive_checks_args(self):
+        self.num_frames = 5
+        self.expected_num_objects = int(dist.Uniform(2, 10).sample())
+        self.expected_num_spurious = float(int(dist.Uniform(1,5).sample()))
+        self.max_num_objects = self.expected_num_objects + self.expected_num_spurious
+        self.emission_prob = dist.Normal(0.5, 1.).rsample()
+        self.emission_noise_scale = dist.Normal(0., 0.5).rsample()
+        assert self.max_num_objects >= self.expected_num_objects
+        return self
+
 
 class DataGenerator:
     def __init__(self, movementType):
@@ -49,7 +61,7 @@ class DataGenerator:
             self.numDimensions = 2
         elif self.movementType == MovementType.Linear2D:
             self.numDimensions = 2
-        elif self.movemetType == MovementType.Linear3D:
+        elif self.movementType == MovementType.Linear3D:
             self.numDimensions = 3
         else:
             print("Error! Don't recognize movement type! ", self.movementType)
@@ -62,7 +74,7 @@ class DataGenerator:
             x = torch.arange(float(num_frames)) / 4
             y = torch.arange(float(num_frames)) / 4
             transposed = torch.stack([x, y], -1)
-        elif self.movemetType == MovementType.Linear3D:
+        elif self.movementType == MovementType.Linear3D:
             x = torch.arange(float(num_frames)) / 4
             y = torch.arange(float(num_frames)) / 4
             z = torch.arange(float(num_frames)) / 4
@@ -100,6 +112,7 @@ class DataGenerator:
 
         return states, positions, observations, self.numDimensions
 
+
 class TargetProbabilisticModel:
     def __init__(self, args, dynamics):
         self.args = args
@@ -122,11 +135,17 @@ class TargetProbabilisticModel:
                 is_spurious = (assign == self.args.max_num_objects)
                 is_real = is_observed & ~is_spurious
                 num_observed = is_observed.float().sum(-1, True)
+
+                bernoulliRealProbs = self.args.expected_num_objects / num_observed
+                bernoulliRealProbs = np.clip(bernoulliRealProbs, 0., 1.)
                 pyro.sample("is_real",
-                            dist.Bernoulli(self.args.expected_num_objects / num_observed),
+                            dist.Bernoulli(bernoulliRealProbs),
                             obs=is_real.float())
+
+                bernoulliSpuriousProbs = self.args.expected_num_spurious / num_observed
+                bernoulliSpuriousProbs = np.clip(bernoulliSpuriousProbs, 0., 1.)
                 pyro.sample("is_spurious",
-                            dist.Bernoulli(self.args.expected_num_spurious / num_observed),
+                            dist.Bernoulli(bernoulliSpuriousProbs),
                             obs=is_spurious.float())
 
                 # The remaining continuous part is exact.
@@ -144,7 +163,7 @@ class TargetProbabilisticModel:
 
     def guide(self, args, observations):
         # Initialize states randomly from the prior.
-        states_loc = pyro.param("states_loc", lambda: torch.randn(self.args.max_num_objects, num_dimensions))
+        states_loc = pyro.param("states_loc", lambda: torch.randn(self.args.max_num_objects, self.args.num_dimensions))
         states_scale = pyro.param("states_scale",
                                 lambda: torch.ones(states_loc.shape) * self.args.emission_noise_scale,
                                 constraint=constraints.positive)
@@ -175,7 +194,7 @@ class TargetProbabilisticModel:
 
         return assignment
 
-    def train(self, true_states, true_positions, observations):
+    def train(self, true_states, true_positions, observations, visualize = False):
         pyro.set_rng_seed(0)
         true_num_objects = len(true_states)
         max_num_detections = observations.shape[1]
@@ -184,7 +203,7 @@ class TargetProbabilisticModel:
 
         pyro.set_rng_seed(1)
         pyro.clear_param_store()
-        self.plot_solution('(before training)')
+        self.plot_solution( observations, true_positions, '(before training)')
 
         infer = SVI(self.model, self.guide, Adam({"lr": 0.01}), TraceEnum_ELBO(max_plate_nesting=2))
         losses = []
@@ -192,11 +211,17 @@ class TargetProbabilisticModel:
             loss = infer.step(self.args, observations)
             if epoch % 10 == 0:
                 print("epoch {: >4d} loss = {}".format(epoch, loss))
-            losses.append(loss)
-        pyplot.plot(losses)
-        self.plot_solution('(after training)')
+            if visualize:
+                losses.append(loss)
+        if visualize:
+            pyplot.plot(losses)
+            self.plot_solution(observations, true_positions, '(after training)')
 
-    def plot_solution(self, message=''):
+    def get_predicted_positions(self):
+        states_loc = pyro.param("states_loc")
+        return self.dynamics.mm(states_loc.t())
+
+    def plot_solution(self, observations, true_positions, message=''):
         assignment = self.guide(self.args, observations)
         states_loc = pyro.param("states_loc")
         positions = self.dynamics.mm(states_loc.t())
@@ -221,17 +246,55 @@ class TargetProbabilisticModel:
         pyplot.tight_layout()
         pyplot.show()
 
+
+class PredictiveChecks:
+    def __init__(self):
+        self.argGenerator = Args()
+        self.results = []
+        self.dataGenerator = DataGenerator(MovementType.Linear2D)
+
+    def runPriorPredictiveChecks(self):
+        self.results = []
+        for i in range(500):
+            args = self.argGenerator.get_prior_predictive_checks_args()
+            dynamics = self.dataGenerator.get_dynamics(args.num_frames)
+            true_states, true_positions, observations, num_dimensions = self.dataGenerator.generate_data(args)
+            args.num_dimensions = num_dimensions
+
+            targetProbabilisticModel = TargetProbabilisticModel(args, dynamics)
+            targetProbabilisticModel.train(true_states, true_positions, observations)
+            positions = targetProbabilisticModel.get_predicted_positions()
+            print("Shape of positions: ", positions.shape())
+
+            self.results.append((args, positions, true_positions))
+
+    def plotResults(self):
+        print("Would be plotting")
+
+class PipelineManager:
+    def __init__(self):
+        self.argManager = Args()
+        self.dataGenerator = DataGenerator(MovementType.Linear2D)        
+
+    def trainAndPredict(self):
+        args = self.argManager.get_default_args()
+        dynamics = self.dataGenerator.get_dynamics(args.num_frames)
+
+        true_states, true_positions, observations, num_dimensions = self.dataGenerator.generate_data(args)
+        args.num_dimensions = num_dimensions
+
+        targetProbabilisticModel = TargetProbabilisticModel(args, dynamics)
+        targetProbabilisticModel.train(true_states, true_positions, observations, True)
+        targetProbabilisticModel.plot_solution(observations, true_positions)
+
+    def runPriorPredictiveChecks(self):
+        predictiveChecks = PredictiveChecks()
+        predictiveChecks.runPriorPredictiveChecks()
+        predictiveChecks.plotResults()
+
 if __name__ == "__main__":
-    argsObs = Args()
-    args = argsObs.get_default_args()
-    assert args.max_num_objects >= args.expected_num_objects
+    pipelineManager = PipelineManager()
+    #pipelineManager.runPriorPredictiveChecks()
+    pipelineManager.trainAndPredict()
 
-    dataGenerator = DataGenerator(MovementType.Linear2D)
-    dynamics = dataGenerator.get_dynamics(args.num_frames)
-    true_states, true_positions, observations, num_dimensions = dataGenerator.generate_data(args)
-    args.num_dimensions = num_dimensions
-
-    targetProbabilisticModel = TargetProbabilisticModel(args, dynamics)
-    targetProbabilisticModel.train(true_states, true_positions, observations)
-    targetProbabilisticModel.plot_solution()
 
