@@ -38,6 +38,16 @@ class Args:
         assert self.max_num_objects >= self.expected_num_objects
         return self 
 
+    def get_ideal_args(self):
+        self.num_frames = 5
+        self.max_num_objects = 4
+        self.expected_num_objects = 3.
+        self.expected_num_spurious = 0.
+        self.emission_prob = 1.0
+        self.emission_noise_scale = 0.
+        assert self.max_num_objects >= self.expected_num_objects
+        return self         
+
     def get_prior_predictive_checks_args(self):
         self.num_frames = 5
         self.expected_num_objects = int(dist.Uniform(1, 5).sample())
